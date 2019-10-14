@@ -1,0 +1,31 @@
+parameter_defaults:
+  CloudName: {{ controller_ip }}
+  ControlPlaneStaticRoutes: []
+  Debug: true
+  DeploymentUser: centos
+  DnsServers:
+    - 1.1.1.1
+    - 8.8.8.8
+  DockerInsecureRegistryAddress:
+    - {{ controller_ip }}:8787
+  NeutronPublicInterface: eth1
+  # domain name used by the host
+  NeutronDnsDomain: localdomain
+  # re-use ctlplane bridge for public net, defined in the standalone
+  # net config (do not change unless you know what you're doing)
+  NeutronBridgeMappings: datacentre:br-ctlplane
+  NeutronPhysicalBridge: br-ctlplane
+  # enable to force metadata for public net
+  #NeutronEnableForceMetadata: true
+  StandaloneEnableRoutedNetworks: false
+  StandaloneHomeDir: /home/centos
+  StandaloneLocalMtu: 1500
+  # Needed if running in a VM, not needed if on baremetal
+  NovaComputeLibvirtType: qemu
+
+resource_registry:
+  OS::TripleO::Services::HeatApi: /usr/share/openstack-tripleo-heat-templates/deployment/heat/heat-api-container-puppet.yaml
+
+  OS::TripleO::Services::HeatApiCfn: /usr/share/openstack-tripleo-heat-templates/deployment/heat/heat-api-cfn-container-puppet.yaml
+  OS::TripleO::Services::HeatApiCloudwatch: /usr/share/openstack-tripleo-heat-templates/deployment/heat/heat-api-cloudwatch-disabled-puppet.yaml
+  OS::TripleO::Services::HeatEngine: /usr/share/openstack-tripleo-heat-templates/deployment/heat/heat-engine-container-puppet.yaml

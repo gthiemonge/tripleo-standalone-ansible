@@ -1,0 +1,189 @@
+- hosts: all
+  tasks:
+      - name: Set hostname
+        shell: |
+            hostnamectl set-hostname tripleo.localdomain
+        become: yes
+        tags: [ prepare ]
+
+      - name: Set hostname
+        shell: |
+          hostnamectl set-hostname tripleo.localdomain --transient
+        become: yes
+        tags: [ prepare ]
+
+      - name: Get package file name
+        shell: |
+            curl -s https://trunk.rdoproject.org/centos7/current/ | \
+                sed -n '/python2-tripleo-repos/ {s/.*\(python2-tripleo-repos.*rpm\).*/\1/; p}'
+        delegate_to: localhost
+        register: package_name
+        tags: [ prepare ]
+
+      - name: Install tripleo-repos package
+        package:
+            name: "https://trunk.rdoproject.org/centos7/current/{{ package_name.stdout }}"
+            state: present
+        become: yes
+        tags: [ prepare ]
+
+      - name: Enable tripleo release
+        shell: |
+          tripleo-repos -b {{ tripleo_release }} current
+        become: yes
+        tags: [ prepare ]
+
+      - name: Install tripleoclient package
+        package:
+          name: python-tripleoclient
+        become: yes
+        tags: [ prepare ]
+
+      - name: Prepare tripleo containers
+        shell: |
+          openstack tripleo container image prepare default \
+          --output-env-file $HOME/containers-prepare-parameters.yaml
+        tags: [ prepare ]
+
+      - name: Create parameters for deployment
+        template:
+          src: standalone_parameters.yaml.j2
+          dest: standalone_parameters.yaml
+        tags: [ prepare ]
+
+      - name: Create octavia parameters
+        template:
+          src: octavia_parameters.yaml.j2
+          dest: octavia_parameters.yaml
+        tags: [ prepare ]
+
+      - name: Create deployment script
+        template:
+          src: deploy.sh.j2
+          dest: deploy.sh
+          mode: 0755
+        tags: [ prepare ]
+
+      - name: Create ssh public key
+        copy:
+          src: "{{ lookup('env', 'HOME') }}/.ssh/id_rsa.pub"
+          dest: /home/centos/.ssh/id_rsa.pub
+        tags: [ prepare ]
+
+      - name: Deploy standalone container based OpenStack
+        shell: |
+          ./deploy.sh 2>&1 | tee deploy.log
+        tags: [ deploy ]
+
+      - name: Install package dependencies
+        package:
+          name: "{{ item }}"
+          state: present
+        become: yes
+        loop:
+            - wget
+        tags: [ post ]
+
+      - name: Upload octavia amphora image
+        shell: |
+          export OS_CLOUD={{ stack_name }}
+          wget -q https://images.rdoproject.org/octavia/stein/amphora-x64-haproxy-centos.qcow2 -O amphora-x64-haproxy-centos.qcow2
+          openstack image create --tag amphora-image --disk-format qcow2 --container-format bare --project service --file amphora-x64-haproxy-centos.qcow2 amphora
+        tags: [ post ]
+
+      - name: Create external network
+        shell: |
+          export OS_CLOUD={{ stack_name }}
+          openstack network create --external \
+            --default \
+            --provider-network-type flat \
+            --provider-physical-network datacentre \
+            public
+        tags: [ post ]
+
+      - name: Create external subnet
+        shell: |
+          export OS_CLOUD={{ stack_name }}
+          openstack subnet create --network public \
+              --subnet-range {{ ansible_default_ipv4.gateway | ipsubnet(24) }} \
+              --gateway {{ ansible_default_ipv4.gateway }} \
+              public_subnet
+        tags: [ post ]
+
+      - name: Install dependencies for tests
+        package:
+          name: "{{ item }}"
+          state: present
+        become: yes
+        loop:
+            - vim
+            - python-pip
+            - python-virtualenv
+            - gcc
+        tags: [ prepare_test ]
+
+      - name: Creation virtualenv for tests
+        shell: |
+          if [ ! -d venv ]; then
+          virtualenv venv
+          fi
+        tags: [ prepare_test ]
+
+      - name: Clone tempest repository
+        git:
+          repo: https://opendev.org/openstack/tempest
+          dest: /home/centos/tempest
+        tags: [ prepare_test ]
+
+      - name: Clone octavia-tempest-plugin repository
+        git:
+          repo: https://opendev.org/openstack/octavia-tempest-plugin
+          dest: /home/centos/octavia-tempest-plugin
+        tags: [ prepare_test ]
+
+      # XXX
+      - name: Checkout branch to be tested
+        shell: |
+          cd /home/centos/octavia-tempest-plugin && \
+              git fetch https://review.opendev.org/openstack/octavia-tempest-plugin refs/changes/62/687562/2 && git checkout FETCH_HEAD
+        tags: [ prepare_test ]
+
+      - name: Install tox
+        shell: |
+          source ./venv/bin/activate
+          pip install tox
+        tags: [ prepare_test ]
+
+      - name: Install octavia-tempest-plugin into tempest venv
+        shell: |
+          source ./venv/bin/activate
+          export OS_CLOUD={{ stack_name }}
+          cd /home/centos/tempest && \
+              tox -evenv-tempest -- pip install -U -e /home/centos/octavia-tempest-plugin
+        tags: [ prepare_test ]
+
+      - name: Install tempestconf
+        shell: |
+          source ./venv/bin/activate
+          pip install python-tempestconf
+        tags: [ prepare_test ]
+
+      - name: Generate tempest configuration
+        shell: |
+          source ./venv/bin/activate
+          discover-tempest-config --create \
+            network-feature-enabled.port_security True \
+            load_balancer.test_client_from_vm True
+        tags: [ prepare_test ]
+
+      - name: Run tests
+        shell: |
+          source ./venv/bin/activate
+          cd tempest
+          tox -eall -- octavia_tempest_plugin
+        tags: [ test ]
+
+  vars:
+      tripleo_release: stein
+      stack_name: standalone
+      controller_ip: 192.168.122.240
